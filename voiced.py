@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """voiced: tiny voice daemon for Termux. Plays audio POSTed from the Mac. Stdlib only."""
-import base64, http.server, ipaddress, json, os, queue, shutil, socket, subprocess, sys, threading, time, urllib.request
+import base64, re, stat, http.server, ipaddress, json, os, queue, shutil, socket, subprocess, sys, threading, time, urllib.request, urllib.error
 
 PORT = 8840
 HOME = os.path.expanduser("~")
@@ -29,20 +29,44 @@ def player(path):
     return None
 
 VOICES = {"en": "en-US-AvaNeural", "hr": "hr-HR-GabrijelaNeural"}
-KEYFILE = os.path.join(HOME, ".voiced", "speechify.key")
+KEYFILE = os.path.join(HOME, ".voiced", "speechify.keys")
+OLDKEY = os.path.join(HOME, ".voiced", "speechify.key")
+RAW = "https://raw.githubusercontent.com/markoboskoauroville/TERMUX_VOICE/main/voiced.py"
+SPEECHIFY = "https://api.sws.speechify.com/v1/audio/speech"
+MODEL, VOICE_ID = "simba-3.2", "beatrice_32"   # same as langsay on the Mac
+DEAD = set()
+
+def load_keys():
+    out = []
+    for f in (KEYFILE, OLDKEY):
+        try:
+            for k in re.findall(r"\bsk_[A-Za-z0-9_-]{40,}", open(f).read()):
+                if k not in out:
+                    out.append(k)
+        except OSError:
+            pass
+    return out
 
 def render_speechify(text, out):
-    if not os.path.exists(KEYFILE):
-        return False
-    key = open(KEYFILE).read().strip()
-    body = json.dumps({"input": text, "voice_id": "beatrice_32", "audio_format": "mp3",
-                       "model": "simba-3.2", "language": "en-GB"}).encode()
-    req = urllib.request.Request("https://api.sws.speechify.com/v1/audio/speech", body,
-        {"Authorization": "Bearer " + key, "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        data = json.loads(r.read())
-    open(out, "wb").write(base64.b64decode(data["audio_data"]))
-    return True
+    keys = load_keys()
+    for i, key in enumerate(keys):
+        if key in DEAD:
+            continue
+        body = json.dumps({"input": text, "voice_id": VOICE_ID, "model": MODEL, "audio_format": "mp3"}).encode()
+        req = urllib.request.Request(SPEECHIFY, body, {"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=40) as r:
+                data = json.loads(r.read())
+            open(out, "wb").write(base64.b64decode(data["audio_data"]))
+            log("speechify key %d of %d" % (i + 1, len(keys)))
+            return True
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 402, 403, 429):
+                DEAD.add(key)
+                log("speechify key %d of %d refused (%d)" % (i + 1, len(keys), e.code))
+                continue
+            raise
+    return False
 
 def render_edge(text, lang, out):
     code = "import asyncio,edge_tts,sys\nasyncio.run(edge_tts.Communicate(sys.argv[1],sys.argv[2]).save(sys.argv[3]))"
@@ -169,6 +193,36 @@ class H(http.server.BaseHTTPRequestHandler):
             Q.put((text, "hr" if lang == "hr" else "en"))
             log("say queued [%s]: %s" % (lang, text[:60]))
             self.send(200, {"ok": True, "queued": Q.qsize()})
+        elif self.path.startswith("/keys"):
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n).decode("utf-8", "replace") if n else ""
+            ks = []
+            for k in re.findall(r"\bsk_[A-Za-z0-9_-]{40,}", raw):
+                if k not in ks:
+                    ks.append(k)
+            if not ks:
+                return self.send(400, {"ok": False, "error": "no keys found"})
+            os.makedirs(os.path.dirname(KEYFILE), exist_ok=True)
+            with open(KEYFILE, "w") as f:
+                f.write("\n".join(ks) + "\n")
+            os.chmod(KEYFILE, stat.S_IRUSR | stat.S_IWUSR)
+            DEAD.clear()
+            log("keys stored: %d" % len(ks))
+            self.send(200, {"ok": True, "keys": len(ks)})
+        elif self.path.startswith("/update"):
+            try:
+                code = urllib.request.urlopen(RAW, timeout=20).read()
+                compile(code, "voiced.py", "exec")
+                me = os.path.abspath(__file__)
+                with open(me + ".new", "wb") as f:
+                    f.write(code)
+                os.replace(me + ".new", me)
+            except Exception as e:
+                log("update failed: %s" % e)
+                return self.send(500, {"ok": False, "error": str(e)[:100]})
+            log("updated (%d bytes), restarting" % len(code))
+            self.send(200, {"ok": True, "bytes": len(code), "restarting": True})
+            threading.Timer(0.7, lambda: os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])).start()
         elif self.path.startswith("/stop"):
             while not Q.empty():
                 try:

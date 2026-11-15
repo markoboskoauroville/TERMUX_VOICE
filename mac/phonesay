@@ -1,5 +1,5 @@
 #!/bin/bash
-# phonesay nothing|pixel|both [hr|en] "text"   |   phonesay status | log nothing|pixel
+# phonesay keys|update nothing|pixel|both  |  phonesay nothing|pixel|both [hr|en] "text"   |   phonesay status | log nothing|pixel
 # Sends TEXT to the voice daemon on the phone (POST /say); the phone renders and speaks it itself.
 ipof(){ case "$1" in nothing) echo 100.67.149.40;; pixel) echo 100.70.23.53;; *) echo "$1";; esac; }
 ADB=~/Library/Android/sdk/platform-tools/adb
@@ -10,6 +10,19 @@ if [ "$1" = status ]; then
   done; exit 0
 fi
 if [ "$1" = log ]; then curl -s -m 3 http://$(ipof "$2"):8840/log | python3 -c 'import sys,json;print("\n".join(json.load(sys.stdin)["log"]))'; exit 0; fi
+if [ "$1" = keys ] || [ "$1" = update ]; then
+  cmd=$1; who=${2:-both}; case $who in both) targets="nothing pixel";; *) targets=$who;; esac
+  for t in $targets; do
+    ip=$(ipof $t)
+    if [ $cmd = keys ]; then
+      # keys by shape (sk_...), through stdin, never in argv or on screen
+      r=$(grep -o -E 'sk_[A-Za-z0-9_-]{40,}' ~/Downloads/API/speechify_api.txt | curl -s -m 5 -X POST --data-binary @- http://$ip:8840/keys)
+    else
+      r=$(curl -s -m 25 -X POST http://$ip:8840/update)
+    fi
+    echo "$t: ${r:-no answer}"
+  done; exit 0
+fi
 [ $# -ge 2 ] || { echo 'usage: phonesay nothing|pixel|both [hr|en] "text" | status | log <phone>' >&2; exit 2; }
 who=$1; shift; lang=en
 case $1 in hr|en) [ $# -ge 2 ] && { lang=$1; shift; };; esac
