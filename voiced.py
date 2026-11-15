@@ -91,18 +91,15 @@ def ensure_scripts():
     except Exception as e:
         log("ensure_scripts: %s" % e)
 
-def notify(nid, title, content, buttons=False, ongoing=True):
+def notify(nid, title, content, buttons=None, ongoing=True, priority="high"):
     exe = shutil.which("termux-notification")
     if not exe:
         return
-    cmd = ["timeout", "-k", "3", "20", exe, "--id", nid, "--title", title, "--content", content, "--alert-once", "--priority", "high"]
+    cmd = ["timeout", "-k", "3", "20", exe, "--id", nid, "--title", title, "--content", content, "--alert-once", "--priority", priority]
     if ongoing:
         cmd.append("--ongoing")
-    if buttons:
-        post = lambda p: "%s -s -XPOST http://127.0.0.1:%d/%s" % (CURL, PORT, p)
-        cmd += ["--button1", "\u23f8 pause", "--button1-action", post("pause"),
-                "--button2", "\u21bb repeat", "--button2-action", post("repeat"),
-                "--button3", "\u23f9 stop", "--button3-action", post("stop")]
+    for i, (label, path) in enumerate((buttons or [])[:3], 1):
+        cmd += ["--button%d" % i, label, "--button%d-action" % i, "%s -s -XPOST http://127.0.0.1:%d/%s" % (CURL, PORT, path)]
     try:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
     except Exception as e:
@@ -177,46 +174,206 @@ def speak(text, lang):
         log("no engine could speak: " + text[:60])
     return None
 
-def play_file(path, frm, text):
-    cmd = player(path)
-    if not cmd:
-        log("no player found")
-        return
-    threading.Thread(target=notify, args=("voiced", "\U0001f50a %s speaking" % DEVICE,
-                     ("from %s: %s" % (frm, text))[:300], True), daemon=True).start()
-    with LOCK:
-        CUR["p"] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        STATE["paused"] = False
-    p = CUR["p"]
-    log("playing %s (from %s)" % (path, frm))
-    p.wait()
-    log("done %s rc=%s" % (path, p.returncode))
+SPEEDS = [0.75, 0.9, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0]
+SETTINGS = os.path.join(HOME, ".voiced", "settings.json")
+SOCK = os.path.join(TMP, "voiced-mpv.sock")
+STATE.update({"speed": 1.0, "action": None, "proc": None, "engine": None, "msg": None, "lastitem": None, "idle": True})
+KICK = threading.Event()
+
+def load_settings():
+    try:
+        v = float(json.load(open(SETTINGS)).get("speed", 1.0))
+        if 0.5 <= v <= 3.0:
+            STATE["speed"] = v
+    except Exception:
+        pass
+
+def save_settings():
+    try:
+        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        json.dump({"speed": STATE["speed"]}, open(SETTINGS, "w"))
+    except Exception:
+        pass
+
+def mpv_ipc(*cmd):
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(1.0)
+    try:
+        s.connect(SOCK)
+        s.sendall((json.dumps({"command": list(cmd)}) + "\n").encode())
+        return json.loads(s.recv(4096).decode().splitlines()[0])
+    finally:
+        s.close()
+
+def proc_alive():
+    p = STATE["proc"]
+    return p if p and p.poll() is None else None
+
+def set_speed(v):
+    v = max(0.5, min(3.0, float(v)))
+    STATE["speed"] = round(v, 2)
+    save_settings()
+    p = proc_alive()
+    if p and STATE["engine"] == "mpv":
+        try:
+            mpv_ipc("set_property", "speed", STATE["speed"])
+        except Exception as e:
+            log("mpv speed ipc failed: %s" % e)
+    log("speed %.2f" % STATE["speed"])
+    KICK.set()
+
+def step_speed(direction):
+    cur = STATE["speed"]
+    if direction > 0:
+        nxt = next((x for x in SPEEDS if x > cur + 0.001), SPEEDS[-1])
+    else:
+        nxt = next((x for x in reversed(SPEEDS) if x < cur - 0.001), SPEEDS[0])
+    set_speed(nxt)
+
+def toggle_pause():
+    import signal
+    STATE["paused"] = not STATE["paused"]
+    p = proc_alive()
+    if p:
+        try:
+            if STATE["engine"] == "mpv":
+                mpv_ipc("set_property", "pause", STATE["paused"])
+            else:
+                os.kill(p.pid, signal.SIGSTOP if STATE["paused"] else signal.SIGCONT)
+        except Exception as e:
+            log("pause failed: %s" % e)
+    log("paused" if STATE["paused"] else "resumed")
+    KICK.set()
+
+def split_sentences(text):
+    return [x for x in re.split(r"(?<=[.!?])\s+", text.strip()) if x] or [text]
+
+def play_sentence(path):
+    """play one clip; returns None when finished, or the action that cut it short"""
+    import signal
+    mpv = shutil.which("mpv")
+    if mpv:
+        try:
+            os.remove(SOCK)
+        except OSError:
+            pass
+        cmd = [mpv, "--no-video", "--really-quiet", "--no-terminal", "--speed=%s" % STATE["speed"],
+               "--input-ipc-server=" + SOCK] + (["--pause"] if STATE["paused"] else []) + [path]
+        STATE["engine"] = "mpv"
+    else:
+        cmd = player(path)
+        STATE["engine"] = "play-audio"
+        if not cmd:
+            log("no player found")
+            return None
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    STATE["proc"] = p
+    if STATE["paused"] and STATE["engine"] != "mpv":
+        os.kill(p.pid, signal.SIGSTOP)
+    while p.poll() is None:
+        act = STATE["action"]
+        if act:
+            try:
+                os.kill(p.pid, signal.SIGCONT)
+            except Exception:
+                pass
+            p.terminate()
+            p.wait()
+            return act
+        time.sleep(0.05)
+    return None
+
+def run_message(item):
+    frm = item.get("from", "unknown")
+    if item["kind"] == "play":
+        sents, files = ["(audio)"], [item["path"]]
+        evs = [threading.Event()]
+        evs[0].set()
+        cancel = threading.Event()
+    else:
+        sents = split_sentences(item["text"])
+        files = [None] * len(sents)
+        evs = [threading.Event() for _ in sents]
+        cancel = threading.Event()
+        def render():
+            for i, t in enumerate(sents):
+                if cancel.is_set():
+                    break
+                try:
+                    files[i] = speak(t, item["lang"])
+                except Exception as e:
+                    log("render error %s" % e)
+                evs[i].set()
+        threading.Thread(target=render, daemon=True).start()
+        STATE["lastitem"] = item
+    STATE["msg"] = {"from": frm, "sents": sents, "idx": 0}
+    idx = 0
+    while idx < len(sents):
+        evs[idx].wait()
+        STATE["msg"]["idx"] = idx
+        KICK.set()
+        act = play_sentence(files[idx]) if files[idx] else None
+        if act:
+            STATE["action"] = None
+        if act == "restart":
+            idx = 0
+            continue
+        if act in ("skip", "stop"):
+            break
+        idx += 1
+    cancel.set()
+    for f in files:
+        if f and item["kind"] != "repeat":
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+    STATE["msg"] = None
+    KICK.set()
 
 def worker():
     while True:
         item = Q.get()
-        frm, text = item.get("from", "unknown"), item.get("text", "")
+        STATE["idle"] = False
         try:
-            path = item.get("path")
-            if item["kind"] == "say":
-                path = speak(item["text"], item["lang"])
-            if path:
-                keep = os.path.join(TMP, "voiced_last.mp3")
-                try:
-                    shutil.copyfile(path, keep)
-                    STATE["last"] = {"path": keep, "from": frm, "text": text}
-                except Exception:
-                    pass
-                play_file(path, frm, text)
-                if item["kind"] != "repeat":
-                    try:
-                        os.remove(path)
-                    except Exception:
-                        pass
+            run_message(item)
         except Exception as e:
             log("worker error %s" % e)
-        if Q.empty():
-            threading.Thread(target=unnotify, args=("voiced",), daemon=True).start()
+            STATE["msg"] = None
+        STATE["idle"] = Q.empty()
+        KICK.set()
+
+def notifier():
+    last_b = None
+    shown = False
+    while True:
+        KICK.wait()
+        KICK.clear()
+        time.sleep(0.15)
+        m = STATE["msg"]
+        if m or STATE["paused"] and m:
+            sents, i = m["sents"], m["idx"]
+            content = sents[i] + (("\n\u25b8 " + sents[i + 1]) if i + 1 < len(sents) else "")
+            threading.Thread(target=notify, args=("voiced", "\U0001f50a %s \u00b7 from %s" % (DEVICE, m["from"]), content[:400],
+                [("\u25b6 resume" if STATE["paused"] else "\u23f8 pause", "pause"), ("\u23f9 stop", "stop"), ("\u21bb restart", "restart")]), daemon=True).start()
+            b = "Speed %.2f\u00d7 \u00b7 queue %d%s \u00b7 sentence %d of %d" % (STATE["speed"], Q.qsize(), " \u00b7 paused" if STATE["paused"] else "", i + 1, len(sents))
+            if b != last_b:
+                last_b = b
+                threading.Thread(target=notify, args=("voiced-ctl", "Voice controls", b,
+                    [("\u2212 slower", "speeddown"), ("+ faster", "speedup"), ("\u23ed next", "next")], True, "low"), daemon=True).start()
+            shown = True
+        elif shown and Q.empty():
+            shown = False
+            last_b = None
+            unnotify("voiced")
+            unnotify("voiced-ctl")
+
+def ensure_mpv():
+    if shutil.which("mpv") or HOME == "/root" or not shutil.which("pkg"):
+        return
+    log("installing mpv")
+    r = subprocess.run(["pkg", "install", "-y", "mpv"], capture_output=True, text=True)
+    log("pkg install mpv rc=%s" % r.returncode)
 
 def allowed(ip):
     try:
@@ -245,7 +402,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if not self.guard():
             return
         if self.path.startswith("/health"):
-            self.send(200, {"ok": True, "device": DEVICE, "proot": HOME == "/root", "queued": Q.qsize(), "speaking": bool(CUR["p"] and CUR["p"].poll() is None), "paused": STATE["paused"], "player": (player("x") or [None])[0]})
+            m = STATE["msg"]
+            self.send(200, {"ok": True, "device": DEVICE, "proot": HOME == "/root", "queued": Q.qsize(), "speaking": bool(m),
+                            "paused": STATE["paused"], "speed": STATE["speed"], "engine": STATE["engine"], "mpv": bool(shutil.which("mpv")),
+                            "sentence": (m["sents"][m["idx"]] if m else None), "index": (m["idx"] + 1 if m else 0), "of": (len(m["sents"]) if m else 0),
+                            "from": (m["from"] if m else None)})
         elif self.path.startswith("/log"):
             try:
                 lines = open(LOG).read().splitlines()[-30:]
@@ -334,27 +495,40 @@ class H(http.server.BaseHTTPRequestHandler):
             threading.Thread(target=small, daemon=True).start()
             self.send(200, {"ok": True})
         elif self.path.startswith("/pause"):
-            with LOCK:
-                p = CUR["p"]
-                if p and p.poll() is None:
-                    import signal
-                    STATE["paused"] = not STATE["paused"]
-                    os.kill(p.pid, signal.SIGSTOP if STATE["paused"] else signal.SIGCONT)
+            if STATE["msg"] or STATE["paused"]:
+                toggle_pause()
             self.send(200, {"ok": True, "paused": STATE["paused"]})
-        elif self.path.startswith("/repeat"):
-            last = STATE["last"]
-            if not last:
-                return self.send(404, {"ok": False, "error": "nothing to repeat"})
-            Q.put({"kind": "repeat", "path": last["path"], "from": last["from"], "text": last["text"]})
+        elif self.path.startswith("/restart") or self.path.startswith("/repeat"):
+            if STATE["msg"]:
+                STATE["paused"] = False
+                STATE["action"] = "restart"
+            elif STATE["lastitem"]:
+                Q.put(dict(STATE["lastitem"]))
+            else:
+                return self.send(404, {"ok": False, "error": "nothing to restart"})
+            KICK.set()
             self.send(200, {"ok": True})
         elif self.path.startswith("/next"):
-            with LOCK:
-                p = CUR["p"]
-                if p and p.poll() is None:
-                    import signal
-                    os.kill(p.pid, signal.SIGCONT)
-                    p.terminate()
+            STATE["paused"] = False
+            if STATE["msg"]:
+                STATE["action"] = "skip"
             self.send(200, {"ok": True})
+        elif self.path.startswith("/speeddown") or self.path.startswith("/speedup"):
+            step_speed(1 if self.path.startswith("/speedup") else -1)
+            self.send(200, {"ok": True, "speed": STATE["speed"]})
+        elif self.path.startswith("/speed"):
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                j = json.loads(self.rfile.read(n).decode("utf-8", "replace")) if n else {}
+            except Exception:
+                j = {}
+            if "value" in j:
+                set_speed(j["value"])
+            elif j.get("step") in ("+", "-"):
+                step_speed(1 if j["step"] == "+" else -1)
+            else:
+                return self.send(400, {"ok": False, "error": "value or step"})
+            self.send(200, {"ok": True, "speed": STATE["speed"]})
         elif self.path.startswith("/stop"):
             while not Q.empty():
                 try:
@@ -363,12 +537,10 @@ class H(http.server.BaseHTTPRequestHandler):
                         os.remove(it["path"])
                 except Exception:
                     pass
-            with LOCK:
-                p = CUR["p"]
-                if p and p.poll() is None:
-                    import signal
-                    os.kill(p.pid, signal.SIGCONT)
-                    p.terminate()
+            STATE["paused"] = False
+            if STATE["msg"]:
+                STATE["action"] = "stop"
+            KICK.set()
             self.send(200, {"ok": True})
         else:
             self.send(404, {"ok": False})
@@ -379,7 +551,10 @@ class S(http.server.ThreadingHTTPServer):
 
 if __name__ == "__main__":
     ensure_scripts()
+    load_settings()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=notifier, daemon=True).start()
+    threading.Thread(target=ensure_mpv, daemon=True).start()
     try:
         srv = S(("0.0.0.0", PORT), H)
     except OSError as e:
