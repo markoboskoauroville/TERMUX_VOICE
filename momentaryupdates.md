@@ -45,3 +45,9 @@ Marko, 15.11.2026, word for word (relayed, change of plan):
 "If I understand correctly, right now I have two voice engines per phone, one new and one old one. This shade I sent you, which I was confused with, if that's the part of another voice engine, I definitely don't need two voice engines. I only need the latest one."
 
 Meaning: the old Voice Engine Android app (community.auroville.voiceengine, :8720) is retired; TERMUX_VOICE (voiced :8840) is the only voice engine on the phones.
+
+Marko, 15.11.2026, word for word (relayed, standing design rule):
+
+"So basically we are quitting this thing which is putting pop ups with the subtitles. We have new shade style. We keeping the shade style."
+
+Rule: on the phones no subtitle pop-ups or overlays anywhere, ever; voice status only in the notification shade, and only while speaking.
