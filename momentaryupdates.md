@@ -11,3 +11,9 @@ Correction, same day, word for word:
 "So if it's not already happening, it should start happening. You are not sending audio from Mac to the phones when you want to talk. You are sending text, and local daemon is talking."
 
 Meaning: the Mac sends TEXT only (POST /say); the phone renders and plays the speech itself.
+
+Marko, same day, word for word:
+
+"This works. Now add Speechify key to the whole Protesys proces"
+
+Meaning: English on both phones is spoken by Speechify, like langsay on the Mac (keys delivered to the phones without anyone typing them).
