@@ -29,3 +29,9 @@ Marko, 15.11.2026, word for word (relayed):
 "what happened now, I was getting two messages at the same time, voice messages and [the phone] was reading two messages at the same time."
 
 Meaning: one voice queue per device, never two voices at once; every speaker on a phone goes through voiced.
+
+## 15.11.2026, Marko by voice, word for word (shades)
+
+"This [voice daemon] is working nice. I also have this, uh, I don't know, I call it shade in the shade. I have nice status. I can see who is talking to me, but I'm missing the speed control. How can I control the speed of the talk? Uh, I think you need to open two shades, uh, or blinders. Let's call it shades, two shaders. One is showing who is sending the message and what is it in the message, and also as the text is spoken, it change the message. And I know in this shaders there are, there are limited numbers of action buttons. Open another shade for missing action buttons. Another shade can be controller shade, and I can do speed change, and anything else what fits to control the voice. Basically, I need pause, stop, restart, speed. Yes. So, if all those cannot fit in one shade, you make two shades. Please, update my voice engines on both phones. ... this is a better system on the phones not to have subtitles in the middle of the screen. Everything happens up there in the shade."
+
+(His "shade" = an Android notification in the notification shade.)
