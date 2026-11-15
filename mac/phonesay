@@ -1,21 +1,21 @@
 #!/bin/bash
 # phonesay nothing|pixel|both "text"   |   phonesay status
-declare -A IP=( [nothing]=100.67.149.40 [pixel]=100.70.23.53 )
+ipof(){ case "$1" in nothing) echo 100.67.149.40;; pixel) echo 100.70.23.53;; *) echo "$1";; esac; }
 ADB=~/Library/Android/sdk/platform-tools/adb
 LANGSAY=~/Developer/claude-code/tools/langsay
 if [ "$1" = status ]; then
   for n in nothing pixel; do
-    printf '%s: ' $n; curl -s -m 3 http://${IP[$n]}:8840/health || printf 'no answer'; echo
+    printf '%s: ' $n; curl -s -m 3 http://$(ipof $n):8840/health || printf 'no answer'; echo
   done; exit 0
 fi
 [ $# -ge 2 ] || { echo 'usage: phonesay nothing|pixel|both "text" | status' >&2; exit 2; }
 who=$1; shift; text="$*"
-case $who in both) targets="nothing pixel";; nothing|pixel) targets=$who;; *) targets=$who; [ -n "${IP[$who]}" ] || IP[$who]=$who;; esac
+case $who in both) targets="nothing pixel";; nothing|pixel) targets=$who;; *) targets=$who;; esac
 f=$(mktemp -t phonesay).mp3
 trap 'rm -f "$f"' EXIT
 "$LANGSAY" --out "$f" en "$text" >/dev/null || { echo "phonesay: langsay failed" >&2; exit 1; }
 for t in $targets; do
-  ip=${IP[$t]}
+  ip=$(ipof $t)
   if curl -s -m 3 -f -X POST --data-binary @"$f" -H 'Content-Type: audio/mpeg' http://$ip:8840/play >/dev/null; then
     echo "$t: played by voiced"
   else
