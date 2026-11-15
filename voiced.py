@@ -251,7 +251,7 @@ def split_sentences(text):
 def play_sentence(path):
     """play one clip; returns None when finished, or the action that cut it short"""
     import signal
-    mpv = shutil.which("mpv")
+    mpv = shutil.which("mpv") if not STATE.get("mpv_bad") else None
     if mpv:
         try:
             os.remove(SOCK)
@@ -288,6 +288,10 @@ def play_sentence(path):
     except Exception:
         err = ""
     log("played %s rc=%s %.1fs %s" % (STATE["engine"], p.returncode, time.time() - t0, err))
+    if STATE["engine"] == "mpv" and p.returncode not in (0, 4) and time.time() - t0 < 1.5:
+        STATE["mpv_bad"] = True
+        log("mpv is broken, using play-audio (speed from the next render is not applied)")
+        return play_sentence(path)
     return None
 
 def run_message(item):
@@ -375,12 +379,25 @@ def notifier():
             unnotify("voiced")
             unnotify("voiced-ctl")
 
+def mpv_works():
+    exe = shutil.which("mpv")
+    if not exe:
+        return False
+    r = subprocess.run([exe, "--version"], capture_output=True, text=True)
+    return r.returncode == 0
+
 def ensure_mpv():
-    if shutil.which("mpv") or HOME == "/root" or not shutil.which("pkg"):
+    if HOME == "/root" or not shutil.which("pkg"):
         return
-    log("installing mpv")
-    r = subprocess.run(["pkg", "install", "-y", "mpv"], capture_output=True, text=True)
-    log("pkg install mpv rc=%s" % r.returncode)
+    if not shutil.which("mpv"):
+        log("installing mpv")
+        r = subprocess.run(["pkg", "install", "-y", "mpv"], capture_output=True, text=True)
+        log("pkg install mpv rc=%s" % r.returncode)
+    if not mpv_works():
+        log("mpv does not start (libraries out of step): pkg upgrade -y")
+        r = subprocess.run(["pkg", "upgrade", "-y", "-o", "Dpkg::Options::=--force-confnew"], capture_output=True, text=True)
+        log("pkg upgrade rc=%s, mpv works: %s" % (r.returncode, mpv_works()))
+    STATE["mpv_bad"] = not mpv_works()
 
 def allowed(ip):
     try:
