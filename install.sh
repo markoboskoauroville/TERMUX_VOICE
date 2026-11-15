@@ -2,7 +2,7 @@
 # TERMUX_VOICE installer: run inside Termux.
 set -e
 RAW=https://raw.githubusercontent.com/markoboskoauroville/TERMUX_VOICE/main
-pkg install -y python play-audio termux-api >/dev/null 2>&1 || pkg install -y python play-audio termux-api
+pkg install -y python play-audio termux-api mpv >/dev/null 2>&1 || pkg install -y python play-audio termux-api mpv
 (pip install -q edge-tts >/dev/null 2>&1 || { pkg install -y python-aiohttp >/dev/null 2>&1; pip install -q edge-tts; }) || echo "edge-tts not installed (termux-tts-speak fallback only)"
 mkdir -p ~/.voiced
 [ "$HOME" = /root ] || { pkill -f '.voiced/voiced.py' 2>/dev/null || true; sleep 1; }
