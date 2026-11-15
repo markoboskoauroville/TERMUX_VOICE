@@ -471,7 +471,7 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send(200, {"ok": True, "keys": len(ks)})
         elif self.path.startswith("/update"):
             try:
-                code = urllib.request.urlopen(RAW, timeout=20).read()
+                code = urllib.request.urlopen(RAW + "?t=%d" % time.time(), timeout=20).read()
                 compile(code, "voiced.py", "exec")
                 me = os.path.abspath(__file__)
                 with open(me + ".new", "wb") as f:
