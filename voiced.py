@@ -266,7 +266,9 @@ def play_sentence(path):
         if not cmd:
             log("no player found")
             return None
-    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t0 = time.time()
+    errf = os.path.join(TMP, "voiced-player.err")
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=open(errf, "w"))
     STATE["proc"] = p
     if STATE["paused"] and STATE["engine"] != "mpv":
         os.kill(p.pid, signal.SIGSTOP)
@@ -281,6 +283,11 @@ def play_sentence(path):
             p.wait()
             return act
         time.sleep(0.05)
+    try:
+        err = open(errf).read().strip()[-200:]
+    except Exception:
+        err = ""
+    log("played %s rc=%s %.1fs %s" % (STATE["engine"], p.returncode, time.time() - t0, err))
     return None
 
 def run_message(item):

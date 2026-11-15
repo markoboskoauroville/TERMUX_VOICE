@@ -1,5 +1,5 @@
 #!/bin/bash
-# phonesay [--from "Mac · session"] ... | keys|update nothing|pixel|both  |  phonesay nothing|pixel|both [hr|en] "text"   |   phonesay status | log nothing|pixel
+# phonesay speed nothing|pixel|both 1.2|+|-  |  phonesay [--from "Mac · session"] ... | keys|update nothing|pixel|both  |  phonesay nothing|pixel|both [hr|en] "text"   |   phonesay status | log nothing|pixel
 # Sends TEXT to the voice daemon on the phone (POST /say); the phone renders and speaks it itself.
 ipof(){ case "$1" in nothing) echo 100.67.149.40;; pixel) echo 100.70.23.53;; *) echo "$1";; esac; }
 ADB=~/Library/Android/sdk/platform-tools/adb
@@ -12,6 +12,11 @@ if [ "$1" = status ]; then
   done; exit 0
 fi
 if [ "$1" = log ]; then curl -s -m 3 http://$(ipof "$2"):8840/log | python3 -c 'import sys,json;print("\n".join(json.load(sys.stdin)["log"]))'; exit 0; fi
+if [ "$1" = speed ]; then
+  who=${2:-both}; v=${3:?usage: phonesay speed nothing|pixel|both 1.2|+|-}; case $who in both) targets="nothing pixel";; *) targets=$who;; esac
+  case $v in +|-) body="{\"step\":\"$v\"}";; *) body="{\"value\":$v}";; esac
+  for t in $targets; do echo "$t: $(curl -s -m 3 -X POST -d "$body" http://$(ipof $t):8840/speed || echo no answer)"; done; exit 0
+fi
 if [ "$1" = keys ] || [ "$1" = update ]; then
   cmd=$1; who=${2:-both}; case $who in both) targets="nothing pixel";; *) targets=$who;; esac
   for t in $targets; do
