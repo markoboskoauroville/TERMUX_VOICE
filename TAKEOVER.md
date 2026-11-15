@@ -8,3 +8,5 @@ A small voice daemon (voiced.py, Python stdlib) that runs inside Termux on an An
 - Phones: Nothing 100.67.149.40, Pixel 7 100.70.23.53 (Tailscale).
 
 - Re-run install.sh any time to update in place (it restarts the daemon).
+
+- Speechify on the phone (15.11.2026): keys in ~/.voiced/speechify.keys (chmod 600, one per line, rotated on 401/402/403/429, same voice/model as langsay: beatrice_32, simba-3.2), Edge TTS when none works. `phonesay keys nothing|pixel|both` sends the keys by shape from the Mac's key file through stdin to POST /keys (the daemon answers only the count); `phonesay update ...` calls POST /update, which pulls the latest voiced.py from this repo and restarts the daemon, so no more typing in Termux. A daemon older than this version has no /update: run install.sh once.
