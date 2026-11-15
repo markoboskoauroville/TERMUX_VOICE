@@ -35,6 +35,64 @@ RAW = "https://raw.githubusercontent.com/markoboskoauroville/TERMUX_VOICE/main/v
 SPEECHIFY = "https://api.sws.speechify.com/v1/audio/speech"
 MODEL, VOICE_ID = "simba-3.2", "beatrice_32"   # same as langsay on the Mac
 DEAD = set()
+BIN = os.path.join(PREFIX, "bin")
+CURL = os.path.join(BIN, "curl")
+STATE = {"paused": False, "last": None, "cur": None}
+
+def device_name():
+    try:
+        f = os.path.join(HOME, ".voiced", "device")
+        if os.path.exists(f):
+            return open(f).read().strip()
+        g = lambda k: subprocess.run(["getprop", k], capture_output=True, text=True, timeout=5).stdout.strip()
+        man, model = g("ro.product.manufacturer"), g("ro.product.model")
+        if "nothing" in man.lower():
+            return "Nothing Phone"
+        return model or socket.gethostname()
+    except Exception:
+        return socket.gethostname()
+
+DEVICE = device_name()
+START_SH = '#!/data/data/com.termux/files/usr/bin/bash\n# start voiced natively unless a native one already answers on :8840\nh=$(curl -s -m 2 http://127.0.0.1:8840/health)\nif [ -n "$h" ]; then\n  if echo "$h" | grep -q \'"proot": true\' && [ "$HOME" != /root ]; then\n    curl -s -m 2 -XPOST http://127.0.0.1:8840/quit >/dev/null; sleep 1.5   # replace a PRoot-hosted daemon\n  else exit 0; fi\nfi\n# inside PRoot ($HOME=/root) a daemon would die with the PRoot: only a native Termux shell or Termux:Boot starts it\n[ "$HOME" = /root ] && exit 0\ncommand -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null || true\nnohup /data/data/com.termux/files/usr/bin/python3 ~/.voiced/voiced.py >/dev/null 2>&1 &\n'
+BOOT_SH = '#!/data/data/com.termux/files/usr/bin/bash\ntermux-wake-lock\n~/.voiced/start.sh\n'
+
+def ensure_scripts():
+    """start.sh and the Termux:Boot script are kept current by the daemon itself (so /update fixes them too)"""
+    try:
+        d = os.path.join(HOME, ".voiced")
+        os.makedirs(d, exist_ok=True)
+        os.makedirs(os.path.join(HOME, ".termux", "boot"), exist_ok=True)
+        for path, body in ((os.path.join(d, "start.sh"), START_SH), (os.path.join(HOME, ".termux", "boot", "voiced"), BOOT_SH)):
+            if not os.path.exists(path) or open(path).read() != body:
+                open(path, "w").write(body)
+            os.chmod(path, 0o755)
+    except Exception as e:
+        log("ensure_scripts: %s" % e)
+
+def notify(nid, title, content, buttons=False, ongoing=True):
+    exe = shutil.which("termux-notification")
+    if not exe:
+        return
+    cmd = ["timeout", "-k", "3", "20", exe, "--id", nid, "--title", title, "--content", content, "--alert-once", "--priority", "high"]
+    if ongoing:
+        cmd.append("--ongoing")
+    if buttons:
+        post = lambda p: "%s -s -XPOST http://127.0.0.1:%d/%s" % (CURL, PORT, p)
+        cmd += ["--button1", "\u23f8 pause", "--button1-action", post("pause"),
+                "--button2", "\u21bb repeat", "--button2-action", post("repeat"),
+                "--button3", "\u23f9 stop", "--button3-action", post("stop")]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=25)
+    except Exception as e:
+        log("notify failed: %s" % e)
+
+def unnotify(nid):
+    exe = shutil.which("termux-notification-remove")
+    if exe:
+        try:
+            subprocess.run(["timeout", "-k", "3", "15", exe, nid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        except Exception:
+            pass
 
 def load_keys():
     out = []
@@ -97,34 +155,46 @@ def speak(text, lang):
         log("no engine could speak: " + text[:60])
     return None
 
+def play_file(path, frm, text):
+    cmd = player(path)
+    if not cmd:
+        log("no player found")
+        return
+    threading.Thread(target=notify, args=("voiced", "\U0001f50a %s speaking" % DEVICE,
+                     ("from %s: %s" % (frm, text))[:300], True), daemon=True).start()
+    with LOCK:
+        CUR["p"] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        STATE["paused"] = False
+    p = CUR["p"]
+    log("playing %s (from %s)" % (path, frm))
+    p.wait()
+    log("done %s rc=%s" % (path, p.returncode))
+
 def worker():
     while True:
-        path = Q.get()
-        if isinstance(path, tuple):
-            try:
-                path = speak(*path)
-            except Exception as e:
-                log("speak error %s" % e)
-                path = None
-            if not path:
-                continue
-        cmd = player(path)
-        if not cmd:
-            log("no player found")
-        else:
-            try:
-                with LOCK:
-                    CUR["p"] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                p = CUR["p"]
-                log("playing " + path)
-                p.wait()
-                log("done %s rc=%s" % (path, p.returncode))
-            except Exception as e:
-                log("play error %s" % e)
+        item = Q.get()
+        frm, text = item.get("from", "unknown"), item.get("text", "")
         try:
-            os.remove(path)
-        except Exception:
-            pass
+            path = item.get("path")
+            if item["kind"] == "say":
+                path = speak(item["text"], item["lang"])
+            if path:
+                keep = os.path.join(TMP, "voiced_last.mp3")
+                try:
+                    shutil.copyfile(path, keep)
+                    STATE["last"] = {"path": keep, "from": frm, "text": text}
+                except Exception:
+                    pass
+                play_file(path, frm, text)
+                if item["kind"] != "repeat":
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log("worker error %s" % e)
+        if Q.empty():
+            threading.Thread(target=unnotify, args=("voiced",), daemon=True).start()
 
 def allowed(ip):
     try:
@@ -153,7 +223,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if not self.guard():
             return
         if self.path.startswith("/health"):
-            self.send(200, {"ok": True, "device": socket.gethostname(), "queued": Q.qsize(), "player": (player("x") or [None])[0]})
+            self.send(200, {"ok": True, "device": DEVICE, "proot": HOME == "/root", "queued": Q.qsize(), "player": (player("x") or [None])[0]})
         elif self.path.startswith("/log"):
             try:
                 lines = open(LOG).read().splitlines()[-30:]
@@ -175,23 +245,23 @@ class H(http.server.BaseHTTPRequestHandler):
             path = os.path.join(TMP, "voiced_%d%s" % (int(time.time() * 1000), ext))
             with open(path, "wb") as f:
                 f.write(data)
-            Q.put(path)
+            Q.put({"kind": "play", "path": path, "from": self.headers.get("X-From", "unknown"), "text": "audio"})
             log("queued %s (%d bytes)" % (path, len(data)))
             self.send(200, {"ok": True, "queued": Q.qsize(), "bytes": len(data)})
         elif self.path.startswith("/say"):
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n) if n else b""
-            text, lang = raw.decode("utf-8", "replace").strip(), "en"
+            text, lang, frm = raw.decode("utf-8", "replace").strip(), "en", "unknown"
             if text.startswith("{"):
                 try:
                     j = json.loads(text)
-                    text, lang = str(j.get("text", "")).strip(), j.get("lang", "en")
+                    text, lang, frm = str(j.get("text", "")).strip(), j.get("lang", "en"), str(j.get("from") or "unknown")[:60]
                 except Exception:
                     pass
             if not text:
                 return self.send(400, {"ok": False, "error": "empty"})
-            Q.put((text, "hr" if lang == "hr" else "en"))
-            log("say queued [%s]: %s" % (lang, text[:60]))
+            Q.put({"kind": "say", "text": text, "lang": "hr" if lang == "hr" else "en", "from": frm})
+            log("say queued [%s] from %s: %s" % (lang, frm, text[:60]))
             self.send(200, {"ok": True, "queued": Q.qsize()})
         elif self.path.startswith("/keys"):
             n = int(self.headers.get("Content-Length") or 0)
@@ -223,15 +293,59 @@ class H(http.server.BaseHTTPRequestHandler):
             log("updated (%d bytes), restarting" % len(code))
             self.send(200, {"ok": True, "bytes": len(code), "restarting": True})
             threading.Timer(0.7, lambda: os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])).start()
+        elif self.path.startswith("/quit"):
+            self.send(200, {"ok": True})
+            log("quit requested")
+            threading.Timer(0.3, lambda: os._exit(0)).start()
+        elif self.path.startswith("/now"):
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                j = json.loads(self.rfile.read(n).decode("utf-8", "replace")) if n else {}
+            except Exception:
+                j = {}
+            who, frm = str(j.get("device") or "another device")[:40], str(j.get("from") or "unknown")[:60]
+            log("now: %s speaking (from %s)" % (who, frm))
+            def small():
+                notify("voiced-other", "%s speaking" % who, "from %s" % frm, False, False)
+                time.sleep(10)
+                unnotify("voiced-other")
+            threading.Thread(target=small, daemon=True).start()
+            self.send(200, {"ok": True})
+        elif self.path.startswith("/pause"):
+            with LOCK:
+                p = CUR["p"]
+                if p and p.poll() is None:
+                    import signal
+                    STATE["paused"] = not STATE["paused"]
+                    os.kill(p.pid, signal.SIGSTOP if STATE["paused"] else signal.SIGCONT)
+            self.send(200, {"ok": True, "paused": STATE["paused"]})
+        elif self.path.startswith("/repeat"):
+            last = STATE["last"]
+            if not last:
+                return self.send(404, {"ok": False, "error": "nothing to repeat"})
+            Q.put({"kind": "repeat", "path": last["path"], "from": last["from"], "text": last["text"]})
+            self.send(200, {"ok": True})
+        elif self.path.startswith("/next"):
+            with LOCK:
+                p = CUR["p"]
+                if p and p.poll() is None:
+                    import signal
+                    os.kill(p.pid, signal.SIGCONT)
+                    p.terminate()
+            self.send(200, {"ok": True})
         elif self.path.startswith("/stop"):
             while not Q.empty():
                 try:
-                    os.remove(Q.get_nowait())
+                    it = Q.get_nowait()
+                    if it.get("kind") == "play":
+                        os.remove(it["path"])
                 except Exception:
                     pass
             with LOCK:
                 p = CUR["p"]
                 if p and p.poll() is None:
+                    import signal
+                    os.kill(p.pid, signal.SIGCONT)
                     p.terminate()
             self.send(200, {"ok": True})
         else:
@@ -242,6 +356,7 @@ class S(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
 if __name__ == "__main__":
+    ensure_scripts()
     threading.Thread(target=worker, daemon=True).start()
     try:
         srv = S(("0.0.0.0", PORT), H)

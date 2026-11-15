@@ -2,23 +2,24 @@
 # TERMUX_VOICE installer: run inside Termux.
 set -e
 RAW=https://raw.githubusercontent.com/markoboskoauroville/TERMUX_VOICE/main
-pkg install -y python play-audio >/dev/null 2>&1 || pkg install -y python play-audio
+pkg install -y python play-audio termux-api >/dev/null 2>&1 || pkg install -y python play-audio termux-api
 (pip install -q edge-tts >/dev/null 2>&1 || { pkg install -y python-aiohttp >/dev/null 2>&1; pip install -q edge-tts; }) || echo "edge-tts not installed (termux-tts-speak fallback only)"
 mkdir -p ~/.voiced
-pkill -f '.voiced/voiced.py' 2>/dev/null || true
-sleep 1
+[ "$HOME" = /root ] || { pkill -f '.voiced/voiced.py' 2>/dev/null || true; sleep 1; }
 curl -fsSL "$RAW/voiced.py" -o ~/.voiced/voiced.py
 cat > ~/.voiced/start.sh <<'S'
 #!/data/data/com.termux/files/usr/bin/bash
-# start voiced unless it already answers on :8840
-if python3 - <<'P' 2>/dev/null
-import socket,sys
-s=socket.socket(); s.settimeout(0.5)
-sys.exit(0 if s.connect_ex(("127.0.0.1",8840))==0 else 1)
-P
-then exit 0; fi
+# start voiced natively unless a native one already answers on :8840
+h=$(curl -s -m 2 http://127.0.0.1:8840/health)
+if [ -n "$h" ]; then
+  if echo "$h" | grep -q '"proot": true' && [ "$HOME" != /root ]; then
+    curl -s -m 2 -XPOST http://127.0.0.1:8840/quit >/dev/null; sleep 1.5   # replace a PRoot-hosted daemon
+  else exit 0; fi
+fi
+# inside PRoot ($HOME=/root) a daemon would die with the PRoot: only a native Termux shell or Termux:Boot starts it
+[ "$HOME" = /root ] && exit 0
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null || true
-nohup python3 ~/.voiced/voiced.py >/dev/null 2>&1 &
+nohup /data/data/com.termux/files/usr/bin/python3 ~/.voiced/voiced.py >/dev/null 2>&1 &
 S
 chmod +x ~/.voiced/start.sh
 touch ~/.bashrc
@@ -29,10 +30,9 @@ cat >> ~/.bashrc <<'B'
 # <<< voiced
 B
 fi
-if [ -d ~/.termux/boot ]; then
-  printf '#!/data/data/com.termux/files/usr/bin/bash\n~/.voiced/start.sh\n' > ~/.termux/boot/voiced
-  chmod +x ~/.termux/boot/voiced
-fi
+mkdir -p ~/.termux/boot
+printf '#!/data/data/com.termux/files/usr/bin/bash\ntermux-wake-lock\n~/.voiced/start.sh\n' > ~/.termux/boot/voiced
+chmod +x ~/.termux/boot/voiced
 ~/.voiced/start.sh
 sleep 1
 echo "voiced ready on :8840"
