@@ -25,7 +25,7 @@ if [ "$1" = keys ] || [ "$1" = update ]; then
       # keys by shape (sk_...), through stdin, never in argv or on screen
       r=$(grep -o -E 'sk_[A-Za-z0-9_-]{40,}' ~/Downloads/API/speechify_api.txt | curl -s -m 5 -X POST --data-binary @- http://$ip:8840/keys)
     else
-      r=$(curl -s -m 25 -X POST http://$ip:8840/update)
+      r=$(curl -s -m 25 -X POST -d "{\"ref\":\"$(git -C ~/Developer/TERMUX_VOICE rev-parse HEAD)\"}" http://$ip:8840/update)
     fi
     echo "$t: ${r:-no answer}"
   done; exit 0

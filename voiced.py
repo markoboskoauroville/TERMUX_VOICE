@@ -91,13 +91,14 @@ def ensure_scripts():
     except Exception as e:
         log("ensure_scripts: %s" % e)
 
-def notify(nid, title, content, buttons=None, ongoing=True, priority="high"):
+def notify(nid, title, content, buttons=None, ongoing=True, priority="high", group=None):
     exe = shutil.which("termux-notification")
     if not exe:
         return
     cmd = ["timeout", "-k", "3", "20", exe, "--id", nid, "--title", title, "--content", content, "--alert-once", "--priority", priority]
     if ongoing:
         cmd.append("--ongoing")
+    cmd += ["--group", group or nid]
     for i, (label, path) in enumerate((buttons or [])[:3], 1):
         cmd += ["--button%d" % i, label, "--button%d-action" % i, "%s -s -XPOST http://127.0.0.1:%d/%s" % (CURL, PORT, path)]
     try:
@@ -488,7 +489,13 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send(200, {"ok": True, "keys": len(ks)})
         elif self.path.startswith("/update"):
             try:
-                code = urllib.request.urlopen(RAW + "?t=%d" % time.time(), timeout=20).read()
+                n = int(self.headers.get("Content-Length") or 0)
+                try:
+                    ref = json.loads(self.rfile.read(n).decode()).get("ref") if n else None
+                except Exception:
+                    ref = None
+                url = RAW.replace("/main/", "/%s/" % ref) if ref and re.fullmatch(r"[0-9a-f]{7,40}", ref) else RAW + "?t=%d" % time.time()
+                code = urllib.request.urlopen(url, timeout=20).read()
                 compile(code, "voiced.py", "exec")
                 me = os.path.abspath(__file__)
                 with open(me + ".new", "wb") as f:
