@@ -39,3 +39,9 @@ Meaning: one voice queue per device, never two voices at once; every speaker on 
 ## 15.11.2026, Marko's feedback after looking at the Nothing's shade, word for word (relayed)
 
 "Please don't make two shades grouped. Make somehow two different processes so the Andre[Android] doesn't group them. And look at this screenshot, please. Voice engine waiting for the voice. Is that some old message? If it's not old, it's new. I don't want to see this. I want to see only voice engine while you speak. In meantime, it's hidden."
+
+Marko, 15.11.2026, word for word (relayed, change of plan):
+
+"If I understand correctly, right now I have two voice engines per phone, one new and one old one. This shade I sent you, which I was confused with, if that's the part of another voice engine, I definitely don't need two voice engines. I only need the latest one."
+
+Meaning: the old Voice Engine Android app (community.auroville.voiceengine, :8720) is retired; TERMUX_VOICE (voiced :8840) is the only voice engine on the phones.
