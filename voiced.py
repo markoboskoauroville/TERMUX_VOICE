@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """voiced: tiny voice daemon for Termux. Plays audio POSTed from the Mac. Stdlib only."""
-import http.server, ipaddress, json, os, queue, shutil, socket, subprocess, sys, threading, time
+import base64, http.server, ipaddress, json, os, queue, shutil, socket, subprocess, sys, threading, time, urllib.request
 
 PORT = 8840
 HOME = os.path.expanduser("~")
@@ -28,9 +28,62 @@ def player(path):
         return ["mpv", "--no-video", "--really-quiet", path]
     return None
 
+VOICES = {"en": "en-US-AvaNeural", "hr": "hr-HR-GabrijelaNeural"}
+KEYFILE = os.path.join(HOME, ".voiced", "speechify.key")
+
+def render_speechify(text, out):
+    if not os.path.exists(KEYFILE):
+        return False
+    key = open(KEYFILE).read().strip()
+    body = json.dumps({"input": text, "voice_id": "beatrice_32", "audio_format": "mp3",
+                       "model": "simba-3.2", "language": "en-GB"}).encode()
+    req = urllib.request.Request("https://api.sws.speechify.com/v1/audio/speech", body,
+        {"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.loads(r.read())
+    open(out, "wb").write(base64.b64decode(data["audio_data"]))
+    return True
+
+def render_edge(text, lang, out):
+    code = "import asyncio,edge_tts,sys\nasyncio.run(edge_tts.Communicate(sys.argv[1],sys.argv[2]).save(sys.argv[3]))"
+    r = subprocess.run([sys.executable, "-c", code, text, VOICES.get(lang, VOICES["en"]), out],
+                       capture_output=True, timeout=45)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode()[-200:])
+    return True
+
+def speak(text, lang):
+    os.makedirs(TMP, exist_ok=True)
+    out = os.path.join(TMP, "say_%d.mp3" % int(time.time() * 1000))
+    engines = []
+    if lang == "en":
+        engines.append(("speechify", lambda: render_speechify(text, out)))
+    engines.append(("edge-tts", lambda: render_edge(text, lang, out)))
+    for name, fn in engines:
+        try:
+            if fn() and os.path.exists(out) and os.path.getsize(out) > 0:
+                log("rendered by %s (%d bytes): %s" % (name, os.path.getsize(out), text[:60]))
+                return out
+        except Exception as e:
+            log("%s failed: %s" % (name, e))
+    if shutil.which("termux-tts-speak"):
+        log("termux-tts-speak: " + text[:60])
+        subprocess.run(["termux-tts-speak", "-l", "hr" if lang == "hr" else "en", text], timeout=120)
+    else:
+        log("no engine could speak: " + text[:60])
+    return None
+
 def worker():
     while True:
         path = Q.get()
+        if isinstance(path, tuple):
+            try:
+                path = speak(*path)
+            except Exception as e:
+                log("speak error %s" % e)
+                path = None
+            if not path:
+                continue
         cmd = player(path)
         if not cmd:
             log("no player found")
@@ -77,6 +130,12 @@ class H(http.server.BaseHTTPRequestHandler):
             return
         if self.path.startswith("/health"):
             self.send(200, {"ok": True, "device": socket.gethostname(), "queued": Q.qsize(), "player": (player("x") or [None])[0]})
+        elif self.path.startswith("/log"):
+            try:
+                lines = open(LOG).read().splitlines()[-30:]
+            except Exception:
+                lines = []
+            self.send(200, {"ok": True, "log": lines})
         else:
             self.send(404, {"ok": False})
     def do_POST(self):
@@ -95,6 +154,21 @@ class H(http.server.BaseHTTPRequestHandler):
             Q.put(path)
             log("queued %s (%d bytes)" % (path, len(data)))
             self.send(200, {"ok": True, "queued": Q.qsize(), "bytes": len(data)})
+        elif self.path.startswith("/say"):
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b""
+            text, lang = raw.decode("utf-8", "replace").strip(), "en"
+            if text.startswith("{"):
+                try:
+                    j = json.loads(text)
+                    text, lang = str(j.get("text", "")).strip(), j.get("lang", "en")
+                except Exception:
+                    pass
+            if not text:
+                return self.send(400, {"ok": False, "error": "empty"})
+            Q.put((text, "hr" if lang == "hr" else "en"))
+            log("say queued [%s]: %s" % (lang, text[:60]))
+            self.send(200, {"ok": True, "queued": Q.qsize()})
         elif self.path.startswith("/stop"):
             while not Q.empty():
                 try:

@@ -3,7 +3,10 @@
 set -e
 RAW=https://raw.githubusercontent.com/markoboskoauroville/TERMUX_VOICE/main
 pkg install -y python play-audio >/dev/null 2>&1 || pkg install -y python play-audio
+(pip install -q edge-tts >/dev/null 2>&1 || { pkg install -y python-aiohttp >/dev/null 2>&1; pip install -q edge-tts; }) || echo "edge-tts not installed (termux-tts-speak fallback only)"
 mkdir -p ~/.voiced
+pkill -f '.voiced/voiced.py' 2>/dev/null || true
+sleep 1
 curl -fsSL "$RAW/voiced.py" -o ~/.voiced/voiced.py
 cat > ~/.voiced/start.sh <<'S'
 #!/data/data/com.termux/files/usr/bin/bash

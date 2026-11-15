@@ -1,5 +1,6 @@
 #!/bin/bash
-# phonesay nothing|pixel|both "text"   |   phonesay status
+# phonesay nothing|pixel|both [hr|en] "text"   |   phonesay status | log nothing|pixel
+# Sends TEXT to the voice daemon on the phone (POST /say); the phone renders and speaks it itself.
 ipof(){ case "$1" in nothing) echo 100.67.149.40;; pixel) echo 100.70.23.53;; *) echo "$1";; esac; }
 ADB=~/Library/Android/sdk/platform-tools/adb
 LANGSAY=~/Developer/claude-code/tools/langsay
@@ -8,20 +9,24 @@ if [ "$1" = status ]; then
     printf '%s: ' $n; curl -s -m 3 http://$(ipof $n):8840/health || printf 'no answer'; echo
   done; exit 0
 fi
-[ $# -ge 2 ] || { echo 'usage: phonesay nothing|pixel|both "text" | status' >&2; exit 2; }
-who=$1; shift; text="$*"
-case $who in both) targets="nothing pixel";; nothing|pixel) targets=$who;; *) targets=$who;; esac
-f=$(mktemp -t phonesay).mp3
-trap 'rm -f "$f"' EXIT
-"$LANGSAY" --out "$f" en "$text" >/dev/null || { echo "phonesay: langsay failed" >&2; exit 1; }
+if [ "$1" = log ]; then curl -s -m 3 http://$(ipof "$2"):8840/log | python3 -c 'import sys,json;print("\n".join(json.load(sys.stdin)["log"]))'; exit 0; fi
+[ $# -ge 2 ] || { echo 'usage: phonesay nothing|pixel|both [hr|en] "text" | status | log <phone>' >&2; exit 2; }
+who=$1; shift; lang=en
+case $1 in hr|en) [ $# -ge 2 ] && { lang=$1; shift; };; esac
+text="$*"
+case $who in both) targets="nothing pixel";; *) targets=$who;; esac
+json=$(python3 -c 'import json,sys;print(json.dumps({"text":sys.argv[1],"lang":sys.argv[2]}))' "$text" "$lang")
 for t in $targets; do
   ip=$(ipof $t)
-  if curl -s -m 3 -f -X POST --data-binary @"$f" -H 'Content-Type: audio/mpeg' http://$ip:8840/play >/dev/null; then
-    echo "$t: played by voiced"
+  if curl -s -m 3 -f -X POST -H 'Content-Type: application/json' -d "$json" http://$ip:8840/say >/dev/null; then
+    echo "$t: said by voiced"
   else
-    echo "phonesay: $t daemon did not answer, falling back to adb" >&2
+    echo "phonesay: $t daemon did not answer, falling back to adb (mp3 rendered on the Mac)" >&2
+    f=$(mktemp -t phonesay).mp3
+    "$LANGSAY" --out "$f" $lang "$text" >/dev/null || { echo "phonesay: langsay failed" >&2; rm -f "$f"; continue; }
     n=phonesay_$$.mp3
     $ADB -s $ip:5555 push "$f" /sdcard/Download/$n >/dev/null &&
     $ADB -s $ip:5555 shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/$n -t audio/mpeg >/dev/null && echo "$t: adb fallback"
+    rm -f "$f"
   fi
 done
