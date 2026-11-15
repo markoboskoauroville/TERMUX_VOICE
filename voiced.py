@@ -56,6 +56,9 @@ DEVICE = device_name()
 START_SH = '#!/data/data/com.termux/files/usr/bin/bash\n# start voiced natively unless a native one already answers on :8840\nh=$(curl -s -m 2 http://127.0.0.1:8840/health)\nif [ -n "$h" ]; then\n  if echo "$h" | grep -q \'"proot": true\' && [ "$HOME" != /root ]; then\n    curl -s -m 2 -XPOST http://127.0.0.1:8840/quit >/dev/null; sleep 1.5   # replace a PRoot-hosted daemon\n  else exit 0; fi\nfi\n# inside PRoot ($HOME=/root) a daemon would die with the PRoot: only a native Termux shell or Termux:Boot starts it\n[ "$HOME" = /root ] && exit 0\ncommand -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null || true\nnohup /data/data/com.termux/files/usr/bin/python3 ~/.voiced/voiced.py >/dev/null 2>&1 &\n'
 BOOT_SH = '#!/data/data/com.termux/files/usr/bin/bash\ntermux-wake-lock\n~/.voiced/start.sh\n'
 
+VSAY = '#!/data/data/com.termux/files/usr/bin/python3\n# vsay: the ONLY way a session on this phone speaks. It goes into voiced\'s queue: one voice at a time.\n# usage: vsay [-l hr|en] [-f "from"] text...        (stdin if no text)\nimport json, os, subprocess, sys, urllib.request\na = sys.argv[1:]; lang = "en"; frm = None\nwhile a and a[0] in ("-l", "-f") and len(a) > 1:\n    if a[0] == "-l": lang = a[1]\n    else: frm = a[1]\n    a = a[2:]\ntext = " ".join(a) or sys.stdin.read()\nif not text.strip():\n    sys.exit("vsay: nothing to say")\nbase = "http://127.0.0.1:8840"\nif frm is None:\n    try: frm = json.load(urllib.request.urlopen(base + "/health", timeout=3))["device"] + " \\u00b7 Claude"\n    except Exception: frm = "phone \\u00b7 Claude"\nreq = urllib.request.Request(base + "/say", json.dumps({"text": text, "lang": lang, "from": frm}).encode(), {"Content-Type": "application/json"})\ntry:\n    print(urllib.request.urlopen(req, timeout=5).read().decode())\nexcept Exception as e:\n    sys.exit("vsay: voiced does not answer (%s). Start it: ~/.voiced/start.sh" % e)\n'
+CLAUDE_BLOCK = '\n# >>> voiced (TERMUX_VOICE)\nSpeaking aloud on this phone: ONLY with `vsay "text"` (Croatian: `vsay -l hr "text"`). It puts the line into the voice daemon\'s queue, so there is one voice at a time and the top notification says who speaks. Never call termux-tts-speak, mpv, termux-media-player or `talk` to speak: two voices at once is exactly what Marko complained about (15.11.2026).\n# <<< voiced\n'
+
 def ensure_scripts():
     """start.sh and the Termux:Boot script are kept current by the daemon itself (so /update fixes them too)"""
     try:
@@ -66,6 +69,25 @@ def ensure_scripts():
             if not os.path.exists(path) or open(path).read() != body:
                 open(path, "w").write(body)
             os.chmod(path, 0o755)
+        for d2 in (BIN, os.path.join(HOME, ".local", "bin")):
+            try:
+                os.makedirs(d2, exist_ok=True)
+                p = os.path.join(d2, "vsay")
+                if not os.path.exists(p) or open(p).read() != VSAY:
+                    open(p, "w").write(VSAY)
+                os.chmod(p, 0o755)
+            except Exception:
+                pass
+        cm = os.path.join(HOME, ".claude", "CLAUDE.md")
+        if os.path.isdir(os.path.dirname(cm)):
+            cur = open(cm).read() if os.path.exists(cm) else ""
+            if "# >>> voiced (TERMUX_VOICE)" in cur:
+                a, b = cur.index("# >>> voiced (TERMUX_VOICE)"), cur.index("# <<< voiced") + len("# <<< voiced\n")
+                new = cur[:a].rstrip("\n") + "\n" + CLAUDE_BLOCK.lstrip("\n") + cur[b:]
+            else:
+                new = cur.rstrip("\n") + "\n" + CLAUDE_BLOCK
+            if new != cur:
+                open(cm, "w").write(new)
     except Exception as e:
         log("ensure_scripts: %s" % e)
 
@@ -223,7 +245,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if not self.guard():
             return
         if self.path.startswith("/health"):
-            self.send(200, {"ok": True, "device": DEVICE, "proot": HOME == "/root", "queued": Q.qsize(), "player": (player("x") or [None])[0]})
+            self.send(200, {"ok": True, "device": DEVICE, "proot": HOME == "/root", "queued": Q.qsize(), "speaking": bool(CUR["p"] and CUR["p"].poll() is None), "paused": STATE["paused"], "player": (player("x") or [None])[0]})
         elif self.path.startswith("/log"):
             try:
                 lines = open(LOG).read().splitlines()[-30:]
