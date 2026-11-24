@@ -57,7 +57,7 @@ START_SH = '#!/data/data/com.termux/files/usr/bin/bash\n# start voiced natively 
 BOOT_SH = '#!/data/data/com.termux/files/usr/bin/bash\ntermux-wake-lock\n~/.voiced/start.sh\n'
 
 VSAY = '#!/data/data/com.termux/files/usr/bin/python3\n# vsay: the ONLY way a session on this phone speaks. It goes into voiced\'s queue: one voice at a time.\n# usage: vsay [-l hr|en] [-f "from"] text...        (stdin if no text)\nimport json, os, subprocess, sys, urllib.request\na = sys.argv[1:]; lang = "en"; frm = None\nwhile a and a[0] in ("-l", "-f") and len(a) > 1:\n    if a[0] == "-l": lang = a[1]\n    else: frm = a[1]\n    a = a[2:]\ntext = " ".join(a) or sys.stdin.read()\nif not text.strip():\n    sys.exit("vsay: nothing to say")\nbase = "http://127.0.0.1:8840"\nif frm is None:\n    try: frm = json.load(urllib.request.urlopen(base + "/health", timeout=3))["device"] + " \\u00b7 Claude"\n    except Exception: frm = "phone \\u00b7 Claude"\nreq = urllib.request.Request(base + "/say", json.dumps({"text": text, "lang": lang, "from": frm}).encode(), {"Content-Type": "application/json"})\ntry:\n    print(urllib.request.urlopen(req, timeout=5).read().decode())\nexcept Exception as e:\n    sys.exit("vsay: voiced does not answer (%s). Start it: ~/.voiced/start.sh" % e)\n'
-CLAUDE_BLOCK = '\n# >>> voiced (TERMUX_VOICE)\nSpeaking aloud on this phone: ONLY with `vsay "text"` (Croatian: `vsay -l hr "text"`). It puts the line into the voice daemon\'s queue, so there is one voice at a time and the top notification says who speaks. Never call termux-tts-speak, mpv, termux-media-player or `talk` to speak: two voices at once is exactly what Marko complained about (15.11.2026).\n# <<< voiced\n'
+CLAUDE_BLOCK = '\n# >>> voiced (TERMUX_VOICE)\nSpeaking aloud on this phone: ONLY with `vsay "text"` (Croatian: `vsay -l hr "text"`). It puts the line into the voice daemon\'s queue, so there is one voice at a time and the top notification says who speaks. Never call termux-tts-speak, mpv, termux-media-player or `talk` to speak: two voices at once is exactly what Marko complained about (15.11.2026). The voice is Speechify Beatrice (English) or Edge Gabrijela (Croatian); the robotic Google phone voice is NEVER used, not even as a fallback (Marko, 24.11.2026).\n# <<< voiced\n'
 
 def ensure_scripts():
     """start.sh and the Termux:Boot script are kept current by the daemon itself (so /update fixes them too)"""
@@ -168,11 +168,9 @@ def speak(text, lang):
                 return out
         except Exception as e:
             log("%s failed: %s" % (name, e))
-    if shutil.which("termux-tts-speak"):
-        log("termux-tts-speak: " + text[:60])
-        subprocess.run(["termux-tts-speak", "-l", "hr" if lang == "hr" else "en", text], timeout=120)
-    else:
-        log("no engine could speak: " + text[:60])
+    # NEVER the phone's Google voice (termux-tts-speak): Marko, 24.11.2026, "Never disturb Marko with the robotic voice
+    # of the Google phone. Never." If Speechify and Edge both fail, stay silent and say so in the log.
+    log("no neural engine could speak (silent, never the Google voice): " + text[:60])
     return None
 
 SPEEDS = [0.75, 0.9, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0]
