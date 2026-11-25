@@ -1,6 +1,8 @@
 #!/bin/bash
 # phonesay speed nothing|pixel|both 1.2|+|-  |  phonesay [--from "Mac · session"] ... | keys|update nothing|pixel|both  |  phonesay nothing|pixel|both [hr|en] "text"   |   phonesay status | log nothing|pixel
 # Sends TEXT to the voice daemon on the phone (POST /say); the phone renders and speaks it itself.
+# 21.11.2026 VOICE ENGINE ON / OFF: ~/.mantra/voice_engine_state "off" = every session quiet; nothing is sent to a phone
+case "$1" in status|log|speed|keys|update) ;; *) [ "$(tr -d ' \n' < ~/.mantra/voice_engine_state 2>/dev/null)" = off ] && { echo "phonesay: VOICE ENGINE is OFF, silent"; exit 0; };; esac
 ipof(){ case "$1" in nothing) echo 100.67.149.40;; pixel) echo 100.70.23.53;; *) echo "$1";; esac; }
 ADB=~/Library/Android/sdk/platform-tools/adb
 LANGSAY=~/Developer/claude-code/tools/langsay
@@ -37,6 +39,10 @@ text="$*"
 case $who in both) targets="nothing pixel";; *) targets=$who;; esac
 json=$(python3 -c 'import json,sys;print(json.dumps({"text":sys.argv[1],"lang":sys.argv[2],"from":sys.argv[3]}))' "$text" "$lang" "$FROM")
 dev(){ case "$1" in nothing) echo "Nothing Phone";; pixel) echo "Pixel 7";; *) echo "$1";; esac; }
+# 25.11.2026 (Marko: pause playing media while the voice talks): the same module as the Voice Engine (MANTRA_VOICE tools/mediapause.py),
+# held for the length of the sentence (about 0.4 s a word + 3 s) and given back by its own watchdog; silent when nothing plays
+secs=$(python3 -c 'import sys;print(int(len(sys.argv[1].split())*0.4)+3)' "$text")
+~/.local/bin/mediapause hold "$secs" >/dev/null 2>&1
 for t in $targets; do
   ip=$(ipof $t)
   if curl -s -m 3 -f -X POST -H 'Content-Type: application/json' -d "$json" http://$ip:8840/say >/dev/null; then
